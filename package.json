@@ -1,0 +1,19 @@
+{
+  "name": "esp32-remote-control",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Secure web control panel for ESP32 relays through EMQX Cloud",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "express-session": "^1.18.1",
+    "mqtt": "^5.10.4",
+    "express-rate-limit": "^7.5.0"
+  }
+}

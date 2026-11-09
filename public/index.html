@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#101827">
+  <title>کنترل ESP32</title>
+  <style>
+    *{box-sizing:border-box}
+    body{margin:0;background:#0b1220;color:#edf2f7;font-family:Tahoma,Arial,sans-serif;min-height:100vh}
+    .wrap{max-width:760px;margin:auto;padding:24px 16px 48px}
+    header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:22px}
+    h1{font-size:23px;margin:0 0 7px}
+    .sub,.muted{color:#9aa9bd;font-size:13px;line-height:1.8}
+    .panel{background:#121e30;border:1px solid #26364c;border-radius:17px;padding:20px;box-shadow:0 12px 32px #0003}
+    .login{max-width:420px;margin:8vh auto}
+    label{display:block;margin:12px 0 8px;color:#cbd5e1;font-size:14px}
+    input{width:100%;padding:14px;border-radius:10px;border:1px solid #34465f;background:#0b1525;color:white;font-size:16px;outline:none}
+    button{border:0;border-radius:10px;padding:12px 16px;font-size:14px;font-weight:bold;cursor:pointer}
+    button:disabled{opacity:.5;cursor:not-allowed}
+    .primary{background:#2563eb;color:white;width:100%;margin-top:15px}
+    .logout{background:#26364c;color:#e5edf7}
+    .status{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin:16px 0}
+    .dot{width:9px;height:9px;border-radius:50%;display:inline-block;background:#eab308}
+    .dot.ok{background:#22c55e}.dot.bad{background:#ef4444}
+    .pill{background:#1d2b40;border-radius:30px;padding:7px 11px;font-size:12px;color:#cbd5e1}
+    .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-top:16px}
+    .relay{background:#16243a;border:1px solid #2a3d58;border-radius:15px;padding:17px}
+    .relay h2{font-size:17px;margin:0 0 8px}
+    .state{font-size:13px;color:#aab8ca;margin-bottom:14px}
+    .actions{display:flex;gap:8px}
+    .on{background:#166534;color:white;flex:1}.off{background:#374151;color:white;flex:1}
+    .message{min-height:24px;color:#fbbf24;font-size:13px;margin-top:12px}
+    .hidden{display:none!important}
+    footer{text-align:center;color:#718198;font-size:12px;margin-top:22px}
+    @media(max-width:480px){.grid{grid-template-columns:1fr}.wrap{padding:18px 12px 36px}h1{font-size:20px}}
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <section id="loginView" class="panel login">
+      <h1>کنترل ESP32</h1>
+      <p class="sub">برای ورود، رمز پنل را وارد کن.</p>
+      <form id="loginForm">
+        <label for="password">رمز ورود پنل</label>
+        <input id="password" type="password" autocomplete="current-password" required>
+        <button class="primary" type="submit">ورود</button>
+      </form>
+      <div id="loginMessage" class="message" role="status"></div>
+    </section>
+
+    <section id="controlView" class="hidden">
+      <header>
+        <div>
+          <h1>کنترل چهار رله</h1>
+          <div class="sub">پنل اینترنتی ESP32-CAM</div>
+        </div>
+        <button id="logout" class="logout">خروج</button>
+      </header>
+      <div class="panel">
+        <div class="status">
+          <span class="pill"><span id="mqttDot" class="dot"></span> EMQX: <b id="mqttText">در حال بررسی</b></span>
+          <span class="pill"><span id="deviceDot" class="dot"></span> ESP32: <b id="deviceText">نامشخص</b></span>
+        </div>
+        <div class="muted">وضعیت رله‌ها هر ۲ ثانیه به‌روزرسانی می‌شود. برای اعمال فرمان، اتصال ESP32 به اینترنت و EMQX باید برقرار باشد.</div>
+        <div id="relayGrid" class="grid"></div>
+        <div id="message" class="message" role="status"></div>
+        <div class="muted" id="updated"></div>
+      </div>
+    </section>
+    <footer>ارتباط فرمان‌ها از طریق سرور امن و MQTT انجام می‌شود.</footer>
+  </main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let busy = false;
+
+async function api(url, options={}) {
+  const response = await fetch(url, {
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+    ...options
+  });
+  const data = await response.json().catch(() => ({}));
+  if (response.status === 401 && url !== "/api/login") showLogin();
+  if (!response.ok) throw new Error(data.error || "خطا در ارتباط با سرور");
+  return data;
+}
+
+function showLogin() {
+  $("loginView").classList.remove("hidden");
+  $("controlView").classList.add("hidden");
+}
+function showControl() {
+  $("loginView").classList.add("hidden");
+  $("controlView").classList.remove("hidden");
+  renderRelays();
+  refresh();
+}
+function renderRelays() {
+  $("relayGrid").innerHTML = "";
+  for (let i=1;i<=4;i++) {
+    const card = document.createElement("article");
+    card.className = "relay";
+    card.innerHTML = `<h2>رله ${i}</h2>
+      <div class="state" id="state${i}">وضعیت: نامشخص</div>
+      <div class="actions">
+        <button class="on" data-id="${i}" data-value="ON">روشن</button>
+        <button class="off" data-id="${i}" data-value="OFF">خاموش</button>
+      </div>`;
+    $("relayGrid").appendChild(card);
+  }
+}
+$("relayGrid").addEventListener("click", async (event) => {
+  const button = event.target.closest("button[data-id]");
+  if (!button || busy) return;
+  busy = true;
+  $("message").textContent = "در حال ارسال فرمان...";
+  try {
+    await api(`/api/relay/${button.dataset.id}/set`, {
+      method: "POST",
+      body: JSON.stringify({ value: button.dataset.value })
+    });
+    $("message").textContent = "فرمان ارسال شد؛ در انتظار به‌روزرسانی وضعیت...";
+    setTimeout(refresh, 700);
+  } catch (err) {
+    $("message").textContent = err.message;
+  } finally {
+    busy = false;
+  }
+});
+$("loginForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  $("loginMessage").textContent = "در حال ورود...";
+  try {
+    await api("/api/login", {
+      method: "POST",
+      body: JSON.stringify({ password: $("password").value })
+    });
+    $("password").value = "";
+    $("loginMessage").textContent = "";
+    showControl();
+  } catch (err) {
+    $("loginMessage").textContent = err.message;
+  }
+});
+$("logout").addEventListener("click", async () => {
+  try { await api("/api/logout", { method: "POST", body: "{}" }); } catch (_) {}
+  showLogin();
+});
+
+async function refresh() {
+  try {
+    const data = await api("/api/state");
+    $("mqttText").textContent = data.mqttConnected ? "متصل" : "قطع";
+    $("mqttDot").className = "dot " + (data.mqttConnected ? "ok" : "bad");
+    const online = data.deviceStatus === "ONLINE";
+    $("deviceText").textContent = data.deviceStatus === "ONLINE" ? "آنلاین" :
+      data.deviceStatus === "OFFLINE" ? "آفلاین" : "نامشخص";
+    $("deviceDot").className = "dot " + (online ? "ok" : "bad");
+    for (let i=1;i<=4;i++) {
+      const value = data.relayState[`relay${i}`];
+      $(`state${i}`).textContent = "وضعیت: " + (value === true ? "روشن" : value === false ? "خاموش" : "نامشخص");
+    }
+    $("updated").textContent = data.lastStateAt ? "آخرین دریافت وضعیت: " + new Date(data.lastStateAt).toLocaleTimeString("fa-IR") : "";
+  } catch (err) {
+    $("message").textContent = err.message;
+  }
+}
+(async () => {
+  try {
+    const session = await api("/api/session");
+    if (session.loggedIn) showControl(); else showLogin();
+  } catch (_) { showLogin(); }
+})();
+setInterval(() => {
+  if (!$("controlView").classList.contains("hidden")) refresh();
+}, 2000);
+</script>
+</body>
+</html>
